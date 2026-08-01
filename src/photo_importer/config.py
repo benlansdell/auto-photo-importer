@@ -33,6 +33,7 @@ class AppConfig(BaseModel):
     log_dir: Path = Path("/logs")
     wait_seconds: float = 5.0
     unplug_settle_seconds: float = 3.0
+    camera_settle_seconds: float = 2.0
     max_retries: int = 3
     retry_delay_seconds: float = 10.0
     delete_after_import: bool = False

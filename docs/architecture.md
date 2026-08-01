@@ -40,3 +40,15 @@ The compose file mounts `/dev/bus/usb` and runs privileged. On some NAS firmware
 - Camera set to **USB connection: USB CARD READER** or **USB TETHER SHOOTING / PTP** (X-T3: Setup → Connection Setting → USB Connection Mode → **USB CARD READER** or PTP-compatible mode)
 
 If `gphoto2 --auto-detect` inside the container shows nothing while `lsusb` on the host shows the Fujifilm device, check that the host is not claiming the device via gvfs/mtp-probe.
+
+## Error -52: "Could not find the requested device on the USB port"
+
+Fujifilm bodies drop off the bus and reappear at a new USB address whenever a
+PTP session closes, so a port such as `usb:003,003` captured during detection is
+frequently stale by the next `gphoto2` call.
+
+The importer handles this by re-running `--auto-detect` immediately before every
+camera operation, falling back to letting `gphoto2` choose the single attached
+camera when detection comes up empty. `camera_settle_seconds` adds a short pause
+before each download attempt, and the camera summary is read after the download
+rather than before it to avoid an extra session open/close on the critical path.

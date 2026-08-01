@@ -19,6 +19,10 @@ wait_seconds: 5
 # How long to wait after disconnect before returning to WAITING
 unplug_settle_seconds: 3
 
+# Pause before each download attempt so the camera can finish re-enumerating
+# after a previous PTP session closed (avoids libgphoto2 error -52)
+camera_settle_seconds: 2
+
 # Retry downloads this many times if the camera drops mid-transfer
 max_retries: 3
 retry_delay_seconds: 10

@@ -23,6 +23,22 @@ class CameraError(Exception):
     """Raised when a gphoto2 operation fails."""
 
 
+_ERROR_NOISE = ("*** Error ***", "No error description available")
+
+
+def clean_message(text: str) -> str:
+    """Condense gphoto2's multi-line error banners into a single log line."""
+    parts: list[str] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip().strip("*").strip()
+        for noise in _ERROR_NOISE:
+            line = line.replace(noise, "")
+        line = line.strip(" :")
+        if line:
+            parts.append(line)
+    return "; ".join(dict.fromkeys(parts)) or text.strip()
+
+
 def _run(
     args: list[str],
     *,
@@ -46,7 +62,7 @@ def _run(
         raise CameraError(f"Command timed out: {' '.join(args)}") from exc
 
     if check and result.returncode != 0:
-        stderr = (result.stderr or "").strip()
+        stderr = clean_message(result.stderr or "")
         raise CameraError(stderr or f"Command failed ({result.returncode}): {' '.join(args)}")
     return result
 
@@ -114,6 +130,10 @@ def list_files(port: str | None = None) -> list[str]:
     if port:
         args.extend(["--port", port])
     result = _run(args, timeout=120, check=False)
+    if result.returncode != 0:
+        raise CameraError(
+            clean_message(result.stderr or "") or f"--list-files exited {result.returncode}"
+        )
     names: list[str] = []
     # Lines like: #1     DSCF0001.RAF               rd  25123456 image/x-fuji-raf
     for line in (result.stdout or "").splitlines():
@@ -146,7 +166,7 @@ def download_all(
     # Downloads can take a long time for large sessions
     result = _run(args, timeout=None, check=False)
     if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
+        stderr = clean_message(result.stderr or "")
         # gphoto2 sometimes returns non-zero even on partial success; surface the message
         log.warning("gphoto2 download exit %s: %s", result.returncode, stderr)
         # Treat as failure only if nothing landed
@@ -175,4 +195,4 @@ def delete_all_files(port: str | None = None) -> None:
     except Exception as exc:  # noqa: BLE001
         raise CameraError(f"Failed to delete camera files: {exc}") from exc
     if proc.returncode != 0:
-        raise CameraError((proc.stderr or proc.stdout or "delete failed").strip())
+        raise CameraError(clean_message(proc.stderr or proc.stdout or "delete failed"))

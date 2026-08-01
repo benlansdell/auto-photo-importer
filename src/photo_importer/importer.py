@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,20 +40,11 @@ class ImportSession:
         )
         status_store.reset_progress()
         status_store.set_state(State.CAMERA_FOUND, f"Detected {detected.model}")
+        log.info("Camera connected: %s (port=%s)", detected.model, detected.port)
 
+        # Reading the summary is deferred until after the download: closing a PTP
+        # session makes Fujifilm bodies re-enumerate at a new USB address.
         serial: str | None = None
-        try:
-            summary = cam.get_summary(detected.port)
-            serial = cam.extract_serial(summary)
-            log.info(
-                "Camera connected: %s (port=%s, serial=%s)",
-                detected.model,
-                detected.port,
-                serial or "unknown",
-            )
-        except cam.CameraError as exc:
-            log.warning("Could not read camera summary: %s", exc)
-
         self.database.start_session(session_id, detected.model, serial)
 
         staging = self.config.staging_dir / session_id
@@ -65,7 +57,7 @@ class ImportSession:
 
         try:
             if self.config.dry_run:
-                names = cam.list_files(detected.port)
+                names = cam.list_files(self._current_port(detected))
                 log.info(
                     "[dry-run] Camera has %d files: %s",
                     len(names),
@@ -86,7 +78,7 @@ class ImportSession:
             status_store.set_state(State.IMPORTING, "Downloading from camera")
             files_on_camera = []
             try:
-                files_on_camera = cam.list_files(detected.port)
+                files_on_camera = cam.list_files(self._current_port(detected))
             except cam.CameraError as exc:
                 log.warning("Could not list files before download: %s", exc)
 
@@ -97,7 +89,9 @@ class ImportSession:
                 }
             )
             log.info("Downloading files to %s", staging)
-            self._download_with_retries(detected.port, staging)
+            self._download_with_retries(detected, staging)
+
+            serial = self._read_serial(detected)
 
             downloaded = [p for p in staging.rglob("*") if p.is_file()]
             status_store.update(
@@ -198,7 +192,7 @@ class ImportSession:
             if self.config.delete_after_import and imported > 0:
                 log.warning("delete_after_import enabled — wiping camera files")
                 try:
-                    cam.delete_all_files(detected.port)
+                    cam.delete_all_files(self._current_port(detected))
                 except cam.CameraError as exc:
                     log.error("Camera wipe failed (library is safe): %s", exc)
 
@@ -250,11 +244,53 @@ class ImportSession:
             if staging.exists() and not any(staging.rglob("*")):
                 shutil.rmtree(staging, ignore_errors=True)
 
-    def _download_with_retries(self, port: str, staging: Path) -> None:
+    def _current_port(self, detected: cam.DetectedCamera) -> str | None:
+        """
+        Re-detect the camera to get its current USB address.
+
+        Fujifilm bodies re-enumerate after each PTP session closes, so a port
+        captured earlier in the session often fails with libgphoto2 error -52.
+        Returning None lets gphoto2 pick the single attached camera itself.
+        """
+        try:
+            refreshed = cam.camera_present(self.config.camera_name)
+        except cam.CameraError as exc:
+            log.warning("Could not re-detect camera: %s", exc)
+            return None
+
+        if refreshed is None:
+            log.warning("Camera no longer listed by gphoto2 — letting it auto-detect")
+            return None
+
+        if refreshed.port != detected.port:
+            log.info(
+                "Camera re-enumerated: %s is now on %s",
+                detected.port,
+                refreshed.port,
+            )
+        return refreshed.port
+
+    def _read_serial(self, detected: cam.DetectedCamera) -> str | None:
+        try:
+            summary = cam.get_summary(self._current_port(detected))
+        except cam.CameraError as exc:
+            log.warning("Could not read camera summary: %s", exc)
+            return None
+        serial = cam.extract_serial(summary)
+        log.info("Camera serial: %s", serial or "unknown")
+        return serial
+
+    def _download_with_retries(self, detected: cam.DetectedCamera, staging: Path) -> None:
         last_error: Exception | None = None
         for attempt in range(1, self.config.max_retries + 1):
+            if self.config.camera_settle_seconds > 0:
+                time.sleep(self.config.camera_settle_seconds)
             try:
-                cam.download_all(staging, port=port, skip_existing=True)
+                cam.download_all(
+                    staging,
+                    port=self._current_port(detected),
+                    skip_existing=True,
+                )
                 return
             except cam.CameraError as exc:
                 last_error = exc
@@ -265,8 +301,6 @@ class ImportSession:
                     exc,
                 )
                 if attempt < self.config.max_retries:
-                    import time
-
                     time.sleep(self.config.retry_delay_seconds)
         assert last_error is not None
         raise last_error
