@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Photo Importer</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="header">
+      <div>
+        <p class="eyebrow">NAS ingest</p>
+        <h1>Photo Importer</h1>
+        <p class="sub">Fujifilm PTP · gphoto2 · v{{ version }}</p>
+      </div>
+      <div class="header-actions">
+        <button id="btn-import" class="btn primary" type="button">Import now</button>
+        <button id="btn-eject" class="btn" type="button">Eject / reset</button>
+      </div>
+    </header>
+
+    <section class="status-panel" id="status-panel">
+      <div class="state-row">
+        <span class="state-dot" id="state-dot"></span>
+        <span class="state-label" id="state-label">waiting</span>
+      </div>
+      <p class="message" id="message">Connecting…</p>
+      <div class="meta-grid">
+        <div>
+          <span class="meta-key">Camera</span>
+          <span class="meta-val" id="camera">—</span>
+        </div>
+        <div>
+          <span class="meta-key">Port</span>
+          <span class="meta-val" id="port">—</span>
+        </div>
+        <div>
+          <span class="meta-key">Last import</span>
+          <span class="meta-val" id="last-import">—</span>
+        </div>
+        <div>
+          <span class="meta-key">Library total</span>
+          <span class="meta-val" id="total-imports">—</span>
+        </div>
+      </div>
+      <div class="progress" id="progress-wrap" hidden>
+        <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
+        <p class="progress-text" id="progress-text"></p>
+      </div>
+      <p class="error" id="error" hidden></p>
+    </section>
+
+    <section class="config-strip">
+      <span>Filter: <strong>{{ camera_filter }}</strong></span>
+      <span>Dest: <code>{{ destination }}</code></span>
+      <span>Duplicates: <strong>SHA-256</strong></span>
+      <span>Verify: <strong>{{ "on" if verify_hashes else "off" }}</strong></span>
+      <span>Wipe cam: <strong>{{ "on" if delete_after else "off" }}</strong></span>
+      {% if dry_run %}<span class="badge">DRY RUN</span>{% endif %}
+    </section>
+
+    <div class="columns">
+      <section class="panel">
+        <h2>Live logs</h2>
+        <pre id="logs" class="logs"></pre>
+      </section>
+      <section class="panel">
+        <h2>Recent sessions</h2>
+        <div id="sessions" class="table-wrap"><p class="muted">Loading…</p></div>
+        <h2 class="spaced">Recent imports</h2>
+        <div id="imports" class="table-wrap"><p class="muted">Loading…</p></div>
+      </section>
+    </div>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

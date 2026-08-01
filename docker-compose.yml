@@ -1,0 +1,22 @@
+services:
+  importer:
+    build: .
+    container_name: photo-importer
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    ports:
+      - "8080:8080"
+    volumes:
+      # Adjust the host path to your UGREEN NAS photo library
+      - /volume1/photos:/photos
+      - ./config:/config
+      # Persists imports.sqlite3 across container rebuilds and replacements
+      - ./db:/db
+      - ./logs:/logs
+      - ./hooks:/hooks
+    environment:
+      PHOTO_IMPORTER_CONFIG: /config/config.yaml
+    # Uncomment if your NAS needs the host network for USB quirks
+    # network_mode: host

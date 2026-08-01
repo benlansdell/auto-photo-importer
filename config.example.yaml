@@ -1,0 +1,73 @@
+# Camera matching — substring matched against gphoto2 --auto-detect output
+camera_name: Fujifilm
+
+# Destination library root (mounted into the container as /photos)
+destination: /photos
+
+# Staging directory for downloads before organize/verify
+staging_dir: /tmp/xt3-import
+
+# SQLite database for persistent import history and hash-based duplicate detection
+database_path: /db/imports.sqlite3
+
+# Log directory
+log_dir: /logs
+
+# Poll interval while waiting for a camera (seconds)
+wait_seconds: 5
+
+# How long to wait after disconnect before returning to WAITING
+unplug_settle_seconds: 3
+
+# Retry downloads this many times if the camera drops mid-transfer
+max_retries: 3
+retry_delay_seconds: 10
+
+# Delete files from the camera only after successful verify + move
+delete_after_import: false
+
+# Recompute SHA-256 after organizing to verify the destination copy
+verify_hashes: true
+
+# SHA-256 hashes are always used for duplicate detection. verify_hashes also
+# verifies the destination copy after it is organized.
+
+# Extensions treated as RAW / JPEG (case-insensitive)
+raw_extensions:
+  - RAF
+  - RAW
+  - DNG
+  - CR2
+  - CR3
+  - NEF
+  - ARW
+
+jpeg_extensions:
+  - JPG
+  - JPEG
+
+# Folder layout under destination: YYYY/MM/DD
+# Options: "ymd" -> 2026/07/31 , "ym_ymd" -> 2026/2026-07-31
+folder_layout: ymd
+
+# Preserve original filenames (true) or rename with capture timestamp
+preserve_filenames: true
+
+# Dry-run: detect + list files but do not download / write
+dry_run: false
+
+# Web dashboard
+web:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8080
+
+# Hook scripts (mounted from ./hooks)
+hooks:
+  post_import: /hooks/post_import.sh
+  on_error: /hooks/on_error.sh
+
+# Optional webhook notification after import (set url to enable)
+notifications:
+  webhook_url: null
+  # Discord example: https://discord.com/api/webhooks/...
