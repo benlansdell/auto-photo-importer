@@ -4,11 +4,13 @@ services:
     container_name: photo-importer
     restart: unless-stopped
     privileged: true
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
     ports:
       - "8080:8080"
     volumes:
+      # Bind mount, NOT a `devices:` entry: Docker resolves `devices:` when the
+      # container is created, so a camera plugged in later never gets a node
+      # inside the container and every gphoto2 open fails with error -52.
+      - /dev/bus/usb:/dev/bus/usb
       # Adjust the host path to your UGREEN NAS photo library
       - /volume1/photos:/photos
       - ./config:/config

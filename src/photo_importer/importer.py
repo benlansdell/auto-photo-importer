@@ -5,6 +5,7 @@ from __future__ import annotations
 import shutil
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -16,6 +17,12 @@ from photo_importer.logger import get_logger
 from photo_importer.organizer import organize_files
 from photo_importer.state import State, status_store
 from photo_importer.verifier import hash_directory, sha256_file
+from photo_importer.watermark import (
+    filename_sequence,
+    files_after_watermark,
+    max_sequence,
+    should_reset_watermark,
+)
 
 log = get_logger("importer")
 
@@ -57,7 +64,8 @@ class ImportSession:
 
         try:
             if self.config.dry_run:
-                names = cam.list_files(self._current_port(detected))
+                listed = cam.list_files(self._current_port(detected))
+                names = [item.name for item in listed]
                 log.info(
                     "[dry-run] Camera has %d files: %s",
                     len(names),
@@ -74,22 +82,67 @@ class ImportSession:
                 )
                 return True
 
-            # --- Download ---
-            status_store.set_state(State.IMPORTING, "Downloading from camera")
-            files_on_camera = []
-            try:
-                files_on_camera = cam.list_files(self._current_port(detected))
-            except cam.CameraError as exc:
-                log.warning("Could not list files before download: %s", exc)
+            # --- List + high-water filter (avoid re-downloading known files) ---
+            status_store.set_state(State.IMPORTING, "Listing camera files")
+            camera_key = detected.model
+            watermark = self.database.get_watermark(camera_key)
+            listed = cam.list_files(self._current_port(detected))
+            sequences = [
+                seq
+                for item in listed
+                if (seq := filename_sequence(item.name)) is not None
+            ]
+            if should_reset_watermark(sequences, watermark):
+                log.warning(
+                    "Camera filename counter appears reset "
+                    "(camera max %s < watermark %s) — clearing watermark",
+                    max(sequences) if sequences else None,
+                    watermark,
+                )
+                watermark = 0
+                self.database.set_watermark(
+                    camera_key,
+                    0,
+                    camera_name=detected.model,
+                    force=True,
+                )
+
+            to_download, skipped_by_watermark = files_after_watermark(listed, watermark)
+            skipped = skipped_by_watermark
+            log.info(
+                "Camera has %d files; watermark=%s → downloading %d, skipping %d",
+                len(listed),
+                watermark,
+                len(to_download),
+                skipped_by_watermark,
+            )
+
+            if not to_download:
+                log.info("Nothing new past watermark %s", watermark)
+                status_store.update(
+                    progress={
+                        "files_total": len(listed),
+                        "files_skipped": skipped,
+                        "message": "Nothing new to import",
+                    }
+                )
+                self.database.finish_session(
+                    session_id, files_imported=0, files_skipped=skipped
+                )
+                status_store.update(last_import_at=datetime.now(UTC))
+                return True
 
             status_store.update(
                 progress={
-                    "files_total": len(files_on_camera),
-                    "message": f"Downloading {len(files_on_camera) or '?'} files",
+                    "files_total": len(to_download),
+                    "files_skipped": skipped,
+                    "message": f"Downloading {len(to_download)} new files",
                 }
             )
-            log.info("Downloading files to %s", staging)
-            self._download_with_retries(detected, staging)
+            log.info("Downloading %d new files to %s", len(to_download), staging)
+            self._download_with_retries(
+                detected, staging, files=to_download, total=len(to_download)
+            )
 
             serial = self._read_serial(detected)
 
@@ -97,16 +150,17 @@ class ImportSession:
             status_store.update(
                 progress={
                     "files_downloaded": len(downloaded),
-                    "files_total": len(downloaded) or len(files_on_camera),
+                    "files_total": len(to_download),
+                    "files_skipped": skipped,
                     "message": f"Downloaded {len(downloaded)} files",
                 }
             )
             log.info("Downloaded %d files", len(downloaded))
 
             if not downloaded:
-                log.info("No files downloaded (camera empty or all skipped by gphoto2)")
+                log.info("No files downloaded (camera empty or transfer produced nothing)")
                 self.database.finish_session(
-                    session_id, files_imported=0, files_skipped=0
+                    session_id, files_imported=0, files_skipped=skipped
                 )
                 status_store.update(last_import_at=datetime.now(UTC))
                 return True
@@ -122,7 +176,9 @@ class ImportSession:
             )
 
             new_files: list[Path] = []
+            handled_names: list[str] = []
             for path, digest in hashes.items():
+                handled_names.append(path.name)
                 if self.database.has_hash(digest):
                     log.info("Skipping duplicate %s (%s…)", path.name, digest[:12])
                     skipped += 1
@@ -134,6 +190,12 @@ class ImportSession:
 
             if not new_files:
                 log.info("All downloaded files already exist in the import database")
+                self._advance_watermark(
+                    camera_key,
+                    handled_names,
+                    camera_name=detected.model,
+                    camera_serial=serial,
+                )
                 shutil.rmtree(staging, ignore_errors=True)
                 self.database.finish_session(
                     session_id,
@@ -176,6 +238,13 @@ class ImportSession:
                     imported += 1
                 else:
                     skipped += 1
+
+            self._advance_watermark(
+                camera_key,
+                handled_names,
+                camera_name=detected.model,
+                camera_serial=serial,
+            )
 
             status_store.update(
                 progress={
@@ -268,6 +337,10 @@ class ImportSession:
                 detected.port,
                 refreshed.port,
             )
+
+        node = cam.missing_usb_node(refreshed.port)
+        if node is not None:
+            log.error("%s is missing. %s", node, cam.USB_NODE_HINT)
         return refreshed.port
 
     def _read_serial(self, detected: cam.DetectedCamera) -> str | None:
@@ -280,16 +353,79 @@ class ImportSession:
         log.info("Camera serial: %s", serial or "unknown")
         return serial
 
-    def _download_with_retries(self, detected: cam.DetectedCamera, staging: Path) -> None:
+    def _advance_watermark(
+        self,
+        camera_key: str,
+        filenames: list[str],
+        *,
+        camera_name: str | None,
+        camera_serial: str | None,
+    ) -> None:
+        sequence = max_sequence(filenames)
+        if sequence is None:
+            return
+        marker = max(filenames, key=lambda name: filename_sequence(name) or -1)
+        self.database.set_watermark(
+            camera_key,
+            sequence,
+            filename=marker,
+            camera_name=camera_name,
+            camera_serial=camera_serial,
+        )
+        log.info("High-water mark for %s → %s (%s)", camera_key, sequence, marker)
+
+    def _download_progress(self, total: int) -> Callable[[str], None]:
+        """Report each file gphoto2 saves so long transfers show visible progress."""
+        received = 0
+
+        def on_file(filename: str) -> None:
+            nonlocal received
+            received += 1
+            status_store.update(
+                progress={
+                    "files_downloaded": received,
+                    "current_file": filename,
+                    "message": (
+                        f"Downloading {received}/{total}"
+                        if total
+                        else f"Downloading file {received}"
+                    ),
+                }
+            )
+            if received == 1 or received % 10 == 0:
+                log.info(
+                    "Downloaded %d/%s files (latest %s)",
+                    received,
+                    total or "?",
+                    filename,
+                )
+            else:
+                log.debug("Downloaded %s", filename)
+
+        return on_file
+
+    def _download_with_retries(
+        self,
+        detected: cam.DetectedCamera,
+        staging: Path,
+        *,
+        files: list[cam.CameraFile],
+        total: int = 0,
+    ) -> None:
         last_error: Exception | None = None
+        node_missing = False
+
         for attempt in range(1, self.config.max_retries + 1):
             if self.config.camera_settle_seconds > 0:
                 time.sleep(self.config.camera_settle_seconds)
+            port = self._current_port(detected)
+            node_missing = cam.missing_usb_node(port) is not None
             try:
-                cam.download_all(
+                cam.download_files(
                     staging,
-                    port=self._current_port(detected),
-                    skip_existing=True,
+                    files,
+                    port=port,
+                    on_file=self._download_progress(total),
                 )
                 return
             except cam.CameraError as exc:
@@ -302,5 +438,8 @@ class ImportSession:
                 )
                 if attempt < self.config.max_retries:
                     time.sleep(self.config.retry_delay_seconds)
+
         assert last_error is not None
+        if node_missing:
+            raise cam.CameraError(f"{last_error} — {cam.USB_NODE_HINT}") from last_error
         raise last_error

@@ -36,6 +36,7 @@ function renderProgress(progress) {
   text.textContent = [
     progress.message,
     total ? `${done}/${total}` : null,
+    progress.current_file,
     progress.files_skipped ? `skipped ${progress.files_skipped}` : null,
   ]
     .filter(Boolean)

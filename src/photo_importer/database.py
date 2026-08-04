@@ -41,6 +41,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     status          TEXT NOT NULL,
     error_message   TEXT
 );
+
+CREATE TABLE IF NOT EXISTS watermarks (
+    camera_key      TEXT PRIMARY KEY,
+    camera_name     TEXT,
+    camera_serial   TEXT,
+    last_sequence   INTEGER NOT NULL DEFAULT 0,
+    last_filename   TEXT,
+    updated_at      TEXT NOT NULL
+);
 """
 
 
@@ -202,3 +211,104 @@ class Database:
                 "total_imports": total["count"],
                 "last_import_at": last["import_time"] if last else None,
             }
+
+    def get_watermark(self, camera_key: str) -> int:
+        """Return the high-water sequence for a camera, seeding from import history."""
+        with self.connection() as connection:
+            row = connection.execute(
+                "SELECT last_sequence FROM watermarks WHERE camera_key = ?",
+                (camera_key,),
+            ).fetchone()
+            if row is not None:
+                return int(row["last_sequence"])
+
+        seeded = self._seed_watermark_from_imports(camera_key)
+        if seeded > 0:
+            self.set_watermark(camera_key, seeded, filename=None)
+        return seeded
+
+    def set_watermark(
+        self,
+        camera_key: str,
+        sequence: int,
+        *,
+        filename: str | None = None,
+        camera_name: str | None = None,
+        camera_serial: str | None = None,
+        force: bool = False,
+    ) -> None:
+        with self.connection() as connection:
+            if force:
+                connection.execute(
+                    """
+                    INSERT INTO watermarks (
+                        camera_key, camera_name, camera_serial,
+                        last_sequence, last_filename, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(camera_key) DO UPDATE SET
+                        camera_name = COALESCE(excluded.camera_name, watermarks.camera_name),
+                        camera_serial = COALESCE(
+                            excluded.camera_serial, watermarks.camera_serial
+                        ),
+                        last_sequence = excluded.last_sequence,
+                        last_filename = excluded.last_filename,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        camera_key,
+                        camera_name,
+                        camera_serial,
+                        sequence,
+                        filename,
+                        datetime.now(UTC).isoformat(),
+                    ),
+                )
+                return
+
+            connection.execute(
+                """
+                INSERT INTO watermarks (
+                    camera_key, camera_name, camera_serial,
+                    last_sequence, last_filename, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(camera_key) DO UPDATE SET
+                    camera_name = COALESCE(excluded.camera_name, watermarks.camera_name),
+                    camera_serial = COALESCE(
+                        excluded.camera_serial, watermarks.camera_serial
+                    ),
+                    last_sequence = MAX(watermarks.last_sequence, excluded.last_sequence),
+                    last_filename = CASE
+                        WHEN excluded.last_sequence >= watermarks.last_sequence
+                        THEN COALESCE(excluded.last_filename, watermarks.last_filename)
+                        ELSE watermarks.last_filename
+                    END,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    camera_key,
+                    camera_name,
+                    camera_serial,
+                    sequence,
+                    filename,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def _seed_watermark_from_imports(self, camera_key: str) -> int:
+        """Derive an initial watermark from filenames already recorded for this camera."""
+        from photo_importer.watermark import filename_sequence
+
+        with self.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT filename FROM imports
+                WHERE camera_serial = ? OR camera_name = ?
+                """,
+                (camera_key, camera_key),
+            ).fetchall()
+        sequences = [
+            seq
+            for row in rows
+            if (seq := filename_sequence(row["filename"])) is not None
+        ]
+        return max(sequences) if sequences else 0

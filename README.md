@@ -11,6 +11,7 @@ Plug in the camera → files land under `/photos/YYYY/MM/DD/` → optional hooks
 - RAW+JPEG pairs kept together
 - Organize by EXIF `DateTimeOriginal` into `YYYY/MM/DD`
 - SHA-256 duplicate detection with persistent SQLite import history
+- Per-camera high-water mark so re-plugs only download files newer than the last import
 - Optional post-move SHA-256 verification
 - Optional delete-from-camera after verified import
 - Post-import / on-error hook scripts + webhook notifications
@@ -51,6 +52,15 @@ docker compose exec importer gphoto2 --auto-detect
 ```
 
 You should see `Fujifilm X-T3`.
+
+### USB passthrough must be a bind mount
+
+`/dev/bus/usb` is mounted as a volume, not declared under `devices:`. Docker
+resolves `devices:` when the container is created, so a camera plugged in later
+never gets a device node inside the container and every transfer fails with
+`-52: Could not find the requested device on the USB port` even though
+`--auto-detect` lists the camera. See
+[docs/architecture.md](docs/architecture.md#error--52-could-not-find-the-requested-device-on-the-usb-port).
 
 ## Configuration
 

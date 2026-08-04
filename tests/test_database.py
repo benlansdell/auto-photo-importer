@@ -34,3 +34,31 @@ def test_session_history(tmp_path: Path):
     assert len(sessions) == 1
     assert sessions[0]["files_imported"] == 3
     assert sessions[0]["status"] == "success"
+
+
+def test_watermark_advances_and_can_be_forced_down(tmp_path: Path):
+    database = Database(tmp_path / "imports.sqlite3")
+    database.set_watermark("Fuji X-T3", 100, filename="DSCF0100.RAF")
+    database.set_watermark("Fuji X-T3", 50, filename="DSCF0050.RAF")
+    assert database.get_watermark("Fuji X-T3") == 100
+
+    database.set_watermark("Fuji X-T3", 0, force=True)
+    assert database.get_watermark("Fuji X-T3") == 0
+
+
+def test_watermark_seeds_from_import_history(tmp_path: Path):
+    database = Database(tmp_path / "imports.sqlite3")
+    database.record_import(
+        ImportRecord(
+            camera_serial=None,
+            camera_name="Fuji Fujifilm X-T3",
+            filename="DSCF0420.RAF",
+            capture_time=None,
+            sha256="b" * 64,
+            destination="/photos/DSCF0420.RAF",
+            file_size=1,
+            session_id="s",
+            import_time="2026-08-01T00:00:00+00:00",
+        )
+    )
+    assert database.get_watermark("Fuji Fujifilm X-T3") == 420
