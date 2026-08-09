@@ -28,12 +28,24 @@ Every downloaded file's SHA-256 is checked against SQLite before it is moved
 into the library. Successful imports and sessions are recorded for duplicate
 detection and dashboard history.
 
-A per-camera **high-water mark** (highest `DSCF####` sequence successfully
-handled) is also stored. On later plugs the importer lists the camera, skips
-everything at or below that mark, and only downloads newer files. SHA-256 remains
-the durable safety net for anything that does get transferred. If the camera's
-filename counter resets (max on camera < watermark), the mark is cleared and a
-full pass runs again.
+To avoid re-transferring the whole card on every plug, the importer first
+compares the camera's file listing against import history using
+**(filename, byte size)** taken from `gphoto2 --list-files`. Matches are skipped
+without downloading; everything else is transferred and then judged by SHA-256.
+
+Filename and size together are cheap and per-file exact:
+
+- After a camera filename-counter rollover, a reused `DSCF0001.RAF` has a
+  different size, so it is correctly treated as new.
+- A file missing from history because an earlier run was interrupted is
+  downloaded, even if higher-numbered files were imported later.
+
+An earlier design stored a single per-camera high-water sequence number and
+skipped everything at or below it. That was dropped: a maximum assumes the
+history beneath it is complete, so any gap left by an interrupted run became a
+permanent silent skip. `imports.source_filename` records the name the file had
+on the camera, so library-side renames (collision suffixes) do not cause repeat
+downloads.
 
 The Compose bind mount `./db:/db` keeps `/db/imports.sqlite3` outside the
 container. Rebuilding or replacing the container does not remove it. Copy the

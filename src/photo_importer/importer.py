@@ -15,14 +15,9 @@ from photo_importer.database import Database, ImportRecord
 from photo_importer.hooks import run_on_error, run_post_import
 from photo_importer.logger import get_logger
 from photo_importer.organizer import organize_files
+from photo_importer.selection import partition_new_files
 from photo_importer.state import State, status_store
 from photo_importer.verifier import hash_directory, sha256_file
-from photo_importer.watermark import (
-    filename_sequence,
-    files_after_watermark,
-    max_sequence,
-    should_reset_watermark,
-)
 
 log = get_logger("importer")
 
@@ -71,9 +66,7 @@ class ImportSession:
                     len(names),
                     ", ".join(names[:20]),
                 )
-                status_store.update(
-                    progress={"files_total": len(names), "message": "Dry run"}
-                )
+                status_store.update(progress={"files_total": len(names), "message": "Dry run"})
                 self.database.finish_session(
                     session_id,
                     files_imported=0,
@@ -82,55 +75,21 @@ class ImportSession:
                 )
                 return True
 
-            # --- List + high-water filter (avoid re-downloading known files) ---
+            # --- List + skip files already in the import history ---
             status_store.set_state(State.IMPORTING, "Listing camera files")
-            camera_key = detected.model
-            watermark = self.database.get_watermark(camera_key)
             listed = cam.list_files(self._current_port(detected))
-            sequences = [
-                seq
-                for item in listed
-                if (seq := filename_sequence(item.name)) is not None
-            ]
-            if should_reset_watermark(sequences, watermark):
-                log.warning(
-                    "Camera filename counter appears reset "
-                    "(camera max %s < watermark %s) — clearing watermark",
-                    max(sequences) if sequences else None,
-                    watermark,
-                )
-                watermark = 0
-                self.database.set_watermark(
-                    camera_key,
-                    0,
-                    camera_name=detected.model,
-                    force=True,
-                )
-
-            to_download, skipped_by_watermark = files_after_watermark(listed, watermark)
-            known = self.database.known_filenames()
-            if known:
-                before = len(to_download)
-                to_download = [
-                    item for item in to_download if item.name.casefold() not in known
-                ]
-                skipped_by_name = before - len(to_download)
-            else:
-                skipped_by_name = 0
-
-            skipped = skipped_by_watermark + skipped_by_name
+            index = self.database.imported_index()
+            to_download, already_imported = partition_new_files(listed, index)
+            skipped = len(already_imported)
             log.info(
-                "Camera has %d files; watermark=%s → downloading %d "
-                "(skipped %d by watermark, %d by known filename)",
+                "Camera has %d files → downloading %d new, skipping %d already imported",
                 len(listed),
-                watermark,
                 len(to_download),
-                skipped_by_watermark,
-                skipped_by_name,
+                skipped,
             )
 
             if not to_download:
-                log.info("Nothing new past watermark %s", watermark)
+                log.info("Every file on the camera is already in the library")
                 status_store.update(
                     progress={
                         "files_total": len(listed),
@@ -138,9 +97,7 @@ class ImportSession:
                         "message": "Nothing new to import",
                     }
                 )
-                self.database.finish_session(
-                    session_id, files_imported=0, files_skipped=skipped
-                )
+                self.database.finish_session(session_id, files_imported=0, files_skipped=skipped)
                 status_store.update(last_import_at=datetime.now(UTC))
                 return True
 
@@ -171,9 +128,7 @@ class ImportSession:
 
             if not downloaded:
                 log.info("No files downloaded (camera empty or transfer produced nothing)")
-                self.database.finish_session(
-                    session_id, files_imported=0, files_skipped=skipped
-                )
+                self.database.finish_session(session_id, files_imported=0, files_skipped=skipped)
                 status_store.update(last_import_at=datetime.now(UTC))
                 return True
 
@@ -188,9 +143,7 @@ class ImportSession:
             )
 
             new_files: list[Path] = []
-            handled_names: list[str] = []
             for path, digest in hashes.items():
-                handled_names.append(path.name)
                 if self.database.has_hash(digest):
                     log.info("Skipping duplicate %s (%s…)", path.name, digest[:12])
                     skipped += 1
@@ -202,12 +155,6 @@ class ImportSession:
 
             if not new_files:
                 log.info("All downloaded files already exist in the import database")
-                self._advance_watermark(
-                    camera_key,
-                    handled_names,
-                    camera_name=detected.model,
-                    camera_serial=serial,
-                )
                 shutil.rmtree(staging, ignore_errors=True)
                 self.database.finish_session(
                     session_id,
@@ -228,35 +175,25 @@ class ImportSession:
                 if self.config.verify_hashes:
                     dest_hash = sha256_file(item.destination)
                     if dest_hash != digest:
-                        raise RuntimeError(
-                            f"Post-move hash mismatch for {item.destination.name}"
-                        )
+                        raise RuntimeError(f"Post-move hash mismatch for {item.destination.name}")
                     digest = dest_hash
 
                 record = ImportRecord(
                     camera_serial=serial,
                     camera_name=detected.model,
                     filename=item.destination.name,
-                    capture_time=(
-                        item.capture_time.isoformat() if item.capture_time else None
-                    ),
+                    capture_time=(item.capture_time.isoformat() if item.capture_time else None),
                     sha256=digest,
                     destination=str(item.destination),
                     file_size=item.destination.stat().st_size,
                     session_id=session_id,
                     import_time=datetime.now(UTC).isoformat(),
+                    source_filename=item.source.name,
                 )
                 if self.database.record_import(record):
                     imported += 1
                 else:
                     skipped += 1
-
-            self._advance_watermark(
-                camera_key,
-                handled_names,
-                camera_name=detected.model,
-                camera_serial=serial,
-            )
 
             status_store.update(
                 progress={
@@ -364,27 +301,6 @@ class ImportSession:
         serial = cam.extract_serial(summary)
         log.info("Camera serial: %s", serial or "unknown")
         return serial
-
-    def _advance_watermark(
-        self,
-        camera_key: str,
-        filenames: list[str],
-        *,
-        camera_name: str | None,
-        camera_serial: str | None,
-    ) -> None:
-        sequence = max_sequence(filenames)
-        if sequence is None:
-            return
-        marker = max(filenames, key=lambda name: filename_sequence(name) or -1)
-        self.database.set_watermark(
-            camera_key,
-            sequence,
-            filename=marker,
-            camera_name=camera_name,
-            camera_serial=camera_serial,
-        )
-        log.info("High-water mark for %s → %s (%s)", camera_key, sequence, marker)
 
     def _download_progress(self, total: int) -> Callable[[str], None]:
         """Report each file gphoto2 saves so long transfers show visible progress."""

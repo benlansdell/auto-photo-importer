@@ -39,9 +39,7 @@ Mass Storage Camera            usb:001,005
 def test_detect_no_match(monkeypatch):
     class Result:
         stdout = (
-            "Model                          Port\n"
-            "----\n"
-            "Canon EOS R5                  usb:001,002\n"
+            "Model                          Port\n----\nCanon EOS R5                  usb:001,002\n"
         )
         stderr = ""
         returncode = 0
@@ -140,9 +138,19 @@ There is 1 file in folder '/store_00010001/DCIM/101_FUJI'.
 """
     files = parse_file_list(output)
     assert files == [
-        CameraFile(1, "DSCF0001.RAF", "/store_00010001/DCIM/100_FUJI"),
-        CameraFile(2, "DSCF0001.JPG", "/store_00010001/DCIM/100_FUJI"),
-        CameraFile(1, "DSCF0002.RAF", "/store_00010001/DCIM/101_FUJI"),
+        CameraFile(1, "DSCF0001.RAF", "/store_00010001/DCIM/100_FUJI", 25123456),
+        CameraFile(2, "DSCF0001.JPG", "/store_00010001/DCIM/100_FUJI", 5123456),
+        CameraFile(1, "DSCF0002.RAF", "/store_00010001/DCIM/101_FUJI", 25123456),
+    ]
+
+
+def test_parse_file_list_tolerates_missing_size():
+    output = """
+There is 1 file in folder '/store_00010001/DCIM/100_FUJI'.
+#1     DSCF0009.RAF
+"""
+    assert parse_file_list(output) == [
+        CameraFile(1, "DSCF0009.RAF", "/store_00010001/DCIM/100_FUJI", None)
     ]
 
 

@@ -60,9 +60,7 @@ def test_download_error_explains_missing_usb_node(session: ImportSession, monkey
     monkeypatch.setattr(cam, "download_files", fail)
 
     with pytest.raises(cam.CameraError, match="devices:"):
-        session._download_with_retries(
-            detected, session.config.staging_dir, files=_sample_files()
-        )
+        session._download_with_retries(detected, session.config.staging_dir, files=_sample_files())
 
 
 def test_download_retries_with_refreshed_port(session: ImportSession, monkeypatch):
@@ -85,8 +83,6 @@ def test_download_retries_with_refreshed_port(session: ImportSession, monkeypatc
 
     monkeypatch.setattr(cam, "download_files", fake_download)
 
-    session._download_with_retries(
-        detected, session.config.staging_dir, files=_sample_files()
-    )
+    session._download_with_retries(detected, session.config.staging_dir, files=_sample_files())
 
     assert attempted == ["usb:003,004", "usb:003,009"]

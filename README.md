@@ -11,7 +11,8 @@ Plug in the camera → files land under `/photos/YYYY/MM/DD/` → optional hooks
 - RAW+JPEG pairs kept together
 - Organize by EXIF `DateTimeOriginal` into `YYYY/MM/DD`
 - SHA-256 duplicate detection with persistent SQLite import history
-- Per-camera high-water mark so re-plugs only download files newer than the last import
+- Re-plugs skip files already imported (matched on camera filename + byte size from the
+  listing, so nothing is transferred twice and no gap is silently missed)
 - Optional post-move SHA-256 verification
 - Optional delete-from-camera after verified import
 - Post-import / on-error hook scripts + webhook notifications

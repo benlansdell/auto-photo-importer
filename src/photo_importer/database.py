@@ -11,12 +11,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from photo_importer.selection import ImportedIndex
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS imports (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     camera_serial   TEXT,
     camera_name     TEXT,
     filename        TEXT NOT NULL,
+    source_filename TEXT,
     capture_time    TEXT,
     sha256          TEXT NOT NULL,
     destination     TEXT NOT NULL,
@@ -42,14 +45,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     error_message   TEXT
 );
 
-CREATE TABLE IF NOT EXISTS watermarks (
-    camera_key      TEXT PRIMARY KEY,
-    camera_name     TEXT,
-    camera_serial   TEXT,
-    last_sequence   INTEGER NOT NULL DEFAULT 0,
-    last_filename   TEXT,
-    updated_at      TEXT NOT NULL
-);
+CREATE INDEX IF NOT EXISTS idx_imports_name_size ON imports(filename, file_size);
+CREATE INDEX IF NOT EXISTS idx_imports_source_name ON imports(source_filename, file_size);
 """
 
 
@@ -64,6 +61,8 @@ class ImportRecord:
     file_size: int | None
     session_id: str | None
     import_time: str
+    # Name the file had on the camera, which is what listings are matched against.
+    source_filename: str | None = None
 
 
 class Database:
@@ -95,6 +94,14 @@ class Database:
     def _init_schema(self) -> None:
         with self.connection() as connection:
             connection.executescript(SCHEMA)
+            self._migrate(connection)
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        """Add columns introduced after a database may already have been created."""
+        columns = {row["name"] for row in connection.execute("PRAGMA table_info(imports)")}
+        if "source_filename" not in columns:
+            connection.execute("ALTER TABLE imports ADD COLUMN source_filename TEXT")
 
     def has_hash(self, sha256: str) -> bool:
         with self.connection() as connection:
@@ -110,14 +117,16 @@ class Database:
                 connection.execute(
                     """
                     INSERT INTO imports (
-                        camera_serial, camera_name, filename, capture_time,
-                        sha256, destination, file_size, session_id, import_time
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        camera_serial, camera_name, filename, source_filename,
+                        capture_time, sha256, destination, file_size,
+                        session_id, import_time
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         record.camera_serial,
                         record.camera_name,
                         record.filename,
+                        record.source_filename or record.filename,
                         record.capture_time,
                         record.sha256,
                         record.destination,
@@ -212,121 +221,36 @@ class Database:
                 "last_import_at": last["import_time"] if last else None,
             }
 
-    def get_watermark(self, camera_key: str) -> int:
-        """Return the high-water sequence for a camera, seeding from import history."""
-        with self.connection() as connection:
-            row = connection.execute(
-                "SELECT last_sequence FROM watermarks WHERE camera_key = ?",
-                (camera_key,),
-            ).fetchone()
-
-        if row is not None and int(row["last_sequence"]) > 0:
-            return int(row["last_sequence"])
-
-        seeded = self._seed_watermark_from_imports(camera_key)
-        if seeded > 0:
-            self.set_watermark(camera_key, seeded, filename=None, camera_name=camera_key)
-            return seeded
-
-        return int(row["last_sequence"]) if row is not None else 0
-
-    def known_filenames(self) -> set[str]:
-        """Return case-insensitive basenames already recorded in import history."""
-        with self.connection() as connection:
-            rows = connection.execute("SELECT filename FROM imports").fetchall()
-        return {row["filename"].casefold() for row in rows if row["filename"]}
-
-    def set_watermark(
-        self,
-        camera_key: str,
-        sequence: int,
-        *,
-        filename: str | None = None,
-        camera_name: str | None = None,
-        camera_serial: str | None = None,
-        force: bool = False,
-    ) -> None:
-        with self.connection() as connection:
-            if force:
-                connection.execute(
-                    """
-                    INSERT INTO watermarks (
-                        camera_key, camera_name, camera_serial,
-                        last_sequence, last_filename, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(camera_key) DO UPDATE SET
-                        camera_name = COALESCE(excluded.camera_name, watermarks.camera_name),
-                        camera_serial = COALESCE(
-                            excluded.camera_serial, watermarks.camera_serial
-                        ),
-                        last_sequence = excluded.last_sequence,
-                        last_filename = excluded.last_filename,
-                        updated_at = excluded.updated_at
-                    """,
-                    (
-                        camera_key,
-                        camera_name,
-                        camera_serial,
-                        sequence,
-                        filename,
-                        datetime.now(UTC).isoformat(),
-                    ),
-                )
-                return
-
-            connection.execute(
-                """
-                INSERT INTO watermarks (
-                    camera_key, camera_name, camera_serial,
-                    last_sequence, last_filename, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(camera_key) DO UPDATE SET
-                    camera_name = COALESCE(excluded.camera_name, watermarks.camera_name),
-                    camera_serial = COALESCE(
-                        excluded.camera_serial, watermarks.camera_serial
-                    ),
-                    last_sequence = MAX(watermarks.last_sequence, excluded.last_sequence),
-                    last_filename = CASE
-                        WHEN excluded.last_sequence >= watermarks.last_sequence
-                        THEN COALESCE(excluded.last_filename, watermarks.last_filename)
-                        ELSE watermarks.last_filename
-                    END,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    camera_key,
-                    camera_name,
-                    camera_serial,
-                    sequence,
-                    filename,
-                    datetime.now(UTC).isoformat(),
-                ),
-            )
-
-    def _seed_watermark_from_imports(self, camera_key: str) -> int:
+    def imported_index(self) -> ImportedIndex:
         """
-        Derive an initial watermark from filenames already recorded.
+        Build the pre-download match index from import history.
 
-        Prefer rows for this camera key, but fall back to the entire import
-        history. Older sessions often stored a null/different camera_name, and
-        this appliance is typically one body — a global max is the safe seed.
+        Matching on (filename, size) is exact per file, so an interrupted import
+        leaves no gap that would be silently skipped later — unlike a single
+        high-water sequence number, which assumes everything below it landed.
         """
-        from photo_importer.watermark import filename_sequence
-
         with self.connection() as connection:
             rows = connection.execute(
                 """
-                SELECT filename FROM imports
-                WHERE camera_serial = ? OR camera_name = ?
-                """,
-                (camera_key, camera_key),
+                SELECT COALESCE(source_filename, filename) AS filename, file_size
+                FROM imports
+                """
             ).fetchall()
-            if not rows:
-                rows = connection.execute("SELECT filename FROM imports").fetchall()
 
-        sequences = [
-            seq
-            for row in rows
-            if (seq := filename_sequence(row["filename"])) is not None
-        ]
-        return max(sequences) if sequences else 0
+        signatures: set[tuple[str, int]] = set()
+        sizeless: set[str] = set()
+        for row in rows:
+            filename = row["filename"]
+            if not filename:
+                continue
+            key = filename.casefold()
+            size = row["file_size"]
+            if size is None:
+                sizeless.add(key)
+            else:
+                signatures.add((key, int(size)))
+
+        return ImportedIndex(
+            signatures=frozenset(signatures),
+            sizeless_names=frozenset(sizeless),
+        )

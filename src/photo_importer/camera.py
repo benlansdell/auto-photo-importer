@@ -27,6 +27,7 @@ class CameraFile:
     index: int
     name: str
     folder: str
+    size: int | None = None
 
 
 class CameraError(Exception):
@@ -232,11 +233,22 @@ def list_files(port: str | None = None) -> list[CameraFile]:
 
 
 def parse_file_list(output: str) -> list[CameraFile]:
-    """Parse ``gphoto2 --list-files`` output into folder-aware file entries."""
+    """
+    Parse ``gphoto2 --list-files`` output into folder-aware file entries.
+
+    Lines look like::
+
+        There are 2 files in folder '/store_00010001/DCIM/100_FUJI'.
+        #1     DSCF0001.RAF               rd  25123456 image/x-fuji-raf
+
+    The byte size is captured so already-imported files can be recognised
+    without downloading them.
+    """
     files: list[CameraFile] = []
     folder = ""
     folder_re = re.compile(r"files? in folder '([^']+)'", re.IGNORECASE)
-    file_re = re.compile(r"#(\d+)\s+(\S+\.\w+)")
+    file_re = re.compile(r"#(\d+)\s+(\S+\.\w+)(?P<rest>.*)$")
+    size_re = re.compile(r"\b(\d{2,})\b")
     for line in output.splitlines():
         folder_match = folder_re.search(line)
         if folder_match:
@@ -244,11 +256,13 @@ def parse_file_list(output: str) -> list[CameraFile]:
             continue
         file_match = file_re.search(line)
         if file_match and folder:
+            size_match = size_re.search(file_match.group("rest"))
             files.append(
                 CameraFile(
                     index=int(file_match.group(1)),
                     name=file_match.group(2),
                     folder=folder,
+                    size=int(size_match.group(1)) if size_match else None,
                 )
             )
     return files
@@ -341,7 +355,7 @@ def download_all(
     """
     Download all files from the camera into dest_dir.
 
-    Prefer :func:`download_files` with a watermark filter for incremental imports.
+    Prefer :func:`download_files` with a filtered listing for incremental imports.
     """
     dest_dir.mkdir(parents=True, exist_ok=True)
     filename_pattern = str(dest_dir / "%f.%C")

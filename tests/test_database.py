@@ -36,66 +36,54 @@ def test_session_history(tmp_path: Path):
     assert sessions[0]["status"] == "success"
 
 
-def test_watermark_advances_and_can_be_forced_down(tmp_path: Path):
-    database = Database(tmp_path / "imports.sqlite3")
-    database.set_watermark("Fuji X-T3", 100, filename="DSCF0100.RAF")
-    database.set_watermark("Fuji X-T3", 50, filename="DSCF0050.RAF")
-    assert database.get_watermark("Fuji X-T3") == 100
-
-    database.set_watermark("Fuji X-T3", 0, force=True)
-    assert database.get_watermark("Fuji X-T3") == 0
-
-
-def test_watermark_seeds_from_import_history(tmp_path: Path):
-    database = Database(tmp_path / "imports.sqlite3")
-    database.record_import(
-        ImportRecord(
-            camera_serial=None,
-            camera_name="Fuji Fujifilm X-T3",
-            filename="DSCF0420.RAF",
-            capture_time=None,
-            sha256="b" * 64,
-            destination="/photos/DSCF0420.RAF",
-            file_size=1,
-            session_id="s",
-            import_time="2026-08-01T00:00:00+00:00",
-        )
+def _record(filename: str, digest: str, *, size: int = 100, source: str | None = None):
+    return ImportRecord(
+        camera_serial=None,
+        camera_name="Fujifilm X-T3",
+        filename=filename,
+        capture_time=None,
+        sha256=digest,
+        destination=f"/photos/{filename}",
+        file_size=size,
+        session_id="s",
+        import_time="2026-08-01T00:00:00+00:00",
+        source_filename=source,
     )
-    assert database.get_watermark("Fuji Fujifilm X-T3") == 420
 
 
-def test_watermark_seeds_from_all_imports_when_camera_name_mismatches(tmp_path: Path):
+def test_imported_index_matches_name_and_size(tmp_path: Path):
     database = Database(tmp_path / "imports.sqlite3")
-    database.record_import(
-        ImportRecord(
-            camera_serial=None,
-            camera_name=None,
-            filename="DSCF0999.JPG",
-            capture_time=None,
-            sha256="c" * 64,
-            destination="/photos/DSCF0999.JPG",
-            file_size=1,
-            session_id="s",
-            import_time="2026-08-01T00:00:00+00:00",
-        )
-    )
-    # Detected model string doesn't match stored camera_name — still seed.
-    assert database.get_watermark("Fuji Fujifilm X-T3") == 999
+    database.record_import(_record("DSCF0001.RAF", "b" * 64, size=2048))
+    index = database.imported_index()
+
+    assert index.contains("DSCF0001.RAF", 2048) is True
+    assert index.contains("dscf0001.raf", 2048) is True
+    # Same name after a counter rollover, different photo, different size.
+    assert index.contains("DSCF0001.RAF", 9999) is False
+    assert index.contains("DSCF0002.RAF", 2048) is False
 
 
-def test_known_filenames(tmp_path: Path):
+def test_imported_index_uses_camera_filename_when_library_name_differs(tmp_path: Path):
     database = Database(tmp_path / "imports.sqlite3")
-    database.record_import(
-        ImportRecord(
-            camera_serial=None,
-            camera_name=None,
-            filename="DSCF0001.RAF",
-            capture_time=None,
-            sha256="d" * 64,
-            destination="/photos/DSCF0001.RAF",
-            file_size=1,
-            session_id="s",
-            import_time="2026-08-01T00:00:00+00:00",
-        )
-    )
-    assert database.known_filenames() == {"dscf0001.raf"}
+    database.record_import(_record("DSCF0001-1.RAF", "c" * 64, size=512, source="DSCF0001.RAF"))
+    index = database.imported_index()
+
+    assert index.contains("DSCF0001.RAF", 512) is True
+
+
+def test_imported_index_falls_back_to_name_for_legacy_rows(tmp_path: Path):
+    database = Database(tmp_path / "imports.sqlite3")
+    database.record_import(_record("DSCF0007.JPG", "d" * 64, size=None))
+    index = database.imported_index()
+
+    assert index.contains("DSCF0007.JPG", 1234) is True
+
+
+def test_gap_below_highest_sequence_is_still_downloadable(tmp_path: Path):
+    """The old high-water mark hid gaps; per-file matching must not."""
+    database = Database(tmp_path / "imports.sqlite3")
+    database.record_import(_record("DSCF2901.RAF", "e" * 64, size=10))
+    index = database.imported_index()
+
+    assert index.contains("DSCF2901.RAF", 10) is True
+    assert index.contains("DSCF1500.RAF", 10) is False
