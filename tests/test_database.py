@@ -62,3 +62,40 @@ def test_watermark_seeds_from_import_history(tmp_path: Path):
         )
     )
     assert database.get_watermark("Fuji Fujifilm X-T3") == 420
+
+
+def test_watermark_seeds_from_all_imports_when_camera_name_mismatches(tmp_path: Path):
+    database = Database(tmp_path / "imports.sqlite3")
+    database.record_import(
+        ImportRecord(
+            camera_serial=None,
+            camera_name=None,
+            filename="DSCF0999.JPG",
+            capture_time=None,
+            sha256="c" * 64,
+            destination="/photos/DSCF0999.JPG",
+            file_size=1,
+            session_id="s",
+            import_time="2026-08-01T00:00:00+00:00",
+        )
+    )
+    # Detected model string doesn't match stored camera_name — still seed.
+    assert database.get_watermark("Fuji Fujifilm X-T3") == 999
+
+
+def test_known_filenames(tmp_path: Path):
+    database = Database(tmp_path / "imports.sqlite3")
+    database.record_import(
+        ImportRecord(
+            camera_serial=None,
+            camera_name=None,
+            filename="DSCF0001.RAF",
+            capture_time=None,
+            sha256="d" * 64,
+            destination="/photos/DSCF0001.RAF",
+            file_size=1,
+            session_id="s",
+            import_time="2026-08-01T00:00:00+00:00",
+        )
+    )
+    assert database.known_filenames() == {"dscf0001.raf"}

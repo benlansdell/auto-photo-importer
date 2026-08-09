@@ -219,13 +219,22 @@ class Database:
                 "SELECT last_sequence FROM watermarks WHERE camera_key = ?",
                 (camera_key,),
             ).fetchone()
-            if row is not None:
-                return int(row["last_sequence"])
+
+        if row is not None and int(row["last_sequence"]) > 0:
+            return int(row["last_sequence"])
 
         seeded = self._seed_watermark_from_imports(camera_key)
         if seeded > 0:
-            self.set_watermark(camera_key, seeded, filename=None)
-        return seeded
+            self.set_watermark(camera_key, seeded, filename=None, camera_name=camera_key)
+            return seeded
+
+        return int(row["last_sequence"]) if row is not None else 0
+
+    def known_filenames(self) -> set[str]:
+        """Return case-insensitive basenames already recorded in import history."""
+        with self.connection() as connection:
+            rows = connection.execute("SELECT filename FROM imports").fetchall()
+        return {row["filename"].casefold() for row in rows if row["filename"]}
 
     def set_watermark(
         self,
@@ -295,7 +304,13 @@ class Database:
             )
 
     def _seed_watermark_from_imports(self, camera_key: str) -> int:
-        """Derive an initial watermark from filenames already recorded for this camera."""
+        """
+        Derive an initial watermark from filenames already recorded.
+
+        Prefer rows for this camera key, but fall back to the entire import
+        history. Older sessions often stored a null/different camera_name, and
+        this appliance is typically one body — a global max is the safe seed.
+        """
         from photo_importer.watermark import filename_sequence
 
         with self.connection() as connection:
@@ -306,6 +321,9 @@ class Database:
                 """,
                 (camera_key, camera_key),
             ).fetchall()
+            if not rows:
+                rows = connection.execute("SELECT filename FROM imports").fetchall()
+
         sequences = [
             seq
             for row in rows

@@ -108,13 +108,25 @@ class ImportSession:
                 )
 
             to_download, skipped_by_watermark = files_after_watermark(listed, watermark)
-            skipped = skipped_by_watermark
+            known = self.database.known_filenames()
+            if known:
+                before = len(to_download)
+                to_download = [
+                    item for item in to_download if item.name.casefold() not in known
+                ]
+                skipped_by_name = before - len(to_download)
+            else:
+                skipped_by_name = 0
+
+            skipped = skipped_by_watermark + skipped_by_name
             log.info(
-                "Camera has %d files; watermark=%s → downloading %d, skipping %d",
+                "Camera has %d files; watermark=%s → downloading %d "
+                "(skipped %d by watermark, %d by known filename)",
                 len(listed),
                 watermark,
                 len(to_download),
                 skipped_by_watermark,
+                skipped_by_name,
             )
 
             if not to_download:
