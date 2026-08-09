@@ -20,6 +20,9 @@ db/*
 !db/.gitkeep
 config/config.yaml
 !config/.gitkeep
+gphotos/*
+!gphotos/.gitkeep
+!gphotos/config.hjson.example
 .DS_Store
 *.RAF
 *.JPG

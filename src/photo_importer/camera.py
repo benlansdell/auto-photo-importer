@@ -27,7 +27,8 @@ class CameraFile:
     index: int
     name: str
     folder: str
-    size: int | None = None
+    # gphoto2 reports sizes in KB, not bytes. Kept in the unit it was printed in.
+    size_kb: int | None = None
 
 
 class CameraError(Exception):
@@ -239,16 +240,19 @@ def parse_file_list(output: str) -> list[CameraFile]:
     Lines look like::
 
         There are 2 files in folder '/store_00010001/DCIM/100_FUJI'.
-        #1     DSCF0001.RAF               rd  25123456 image/x-fuji-raf
+        #1     DSCF0001.RAF               rd 25123 KB image/x-fuji-raf
+        #2     DSCF0001.JPG               rd  5123 KB 6240x4160 image/jpeg 1700948606
 
-    The byte size is captured so already-imported files can be recognised
-    without downloading them.
+    Optional columns (resolution, trailing timestamp) vary by camera, so the size
+    is only taken from the field explicitly labelled ``KB``. Anything else leaves
+    the size unknown, which makes the caller download the file and fall back to
+    hashing rather than guessing.
     """
     files: list[CameraFile] = []
     folder = ""
     folder_re = re.compile(r"files? in folder '([^']+)'", re.IGNORECASE)
     file_re = re.compile(r"#(\d+)\s+(\S+\.\w+)(?P<rest>.*)$")
-    size_re = re.compile(r"\b(\d{2,})\b")
+    size_re = re.compile(r"(\d+)\s*KB\b", re.IGNORECASE)
     for line in output.splitlines():
         folder_match = folder_re.search(line)
         if folder_match:
@@ -262,7 +266,7 @@ def parse_file_list(output: str) -> list[CameraFile]:
                     index=int(file_match.group(1)),
                     name=file_match.group(2),
                     folder=folder,
-                    size=int(size_match.group(1)) if size_match else None,
+                    size_kb=int(size_match.group(1)) if size_match else None,
                 )
             )
     return files

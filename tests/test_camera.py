@@ -131,23 +131,33 @@ def test_missing_usb_node_ignores_hosts_without_usb_tree():
 def test_parse_file_list_tracks_folders_and_indices():
     output = """
 There are 2 files in folder '/store_00010001/DCIM/100_FUJI'.
-#1     DSCF0001.RAF               rd  25123456 image/x-fuji-raf
-#2     DSCF0001.JPG               rd   5123456 image/jpeg
+#1     DSCF0001.RAF               rd 25123 KB image/x-fuji-raf
+#2     DSCF0001.JPG               rd  5123 KB image/jpeg
 There is 1 file in folder '/store_00010001/DCIM/101_FUJI'.
-#1     DSCF0002.RAF               rd  25123456 image/x-fuji-raf
+#1     DSCF0002.RAF               rd 25124 KB image/x-fuji-raf
 """
     files = parse_file_list(output)
     assert files == [
-        CameraFile(1, "DSCF0001.RAF", "/store_00010001/DCIM/100_FUJI", 25123456),
-        CameraFile(2, "DSCF0001.JPG", "/store_00010001/DCIM/100_FUJI", 5123456),
-        CameraFile(1, "DSCF0002.RAF", "/store_00010001/DCIM/101_FUJI", 25123456),
+        CameraFile(1, "DSCF0001.RAF", "/store_00010001/DCIM/100_FUJI", 25123),
+        CameraFile(2, "DSCF0001.JPG", "/store_00010001/DCIM/100_FUJI", 5123),
+        CameraFile(1, "DSCF0002.RAF", "/store_00010001/DCIM/101_FUJI", 25124),
     ]
+
+
+def test_parse_file_list_ignores_resolution_and_timestamp_columns():
+    """Only the field labelled KB is a size; resolution/epoch columns are not."""
+    output = """
+There are 2 files in folder '/store_00010001/DCIM/100_FUJI'.
+#1     DSCF0003.JPG               rd  4123 KB 6240x4160 image/jpeg 1700948606
+#2     DSCF0004.JPG               rd 13198 KB 5568x3712 image/jpeg
+"""
+    assert [item.size_kb for item in parse_file_list(output)] == [4123, 13198]
 
 
 def test_parse_file_list_tolerates_missing_size():
     output = """
 There is 1 file in folder '/store_00010001/DCIM/100_FUJI'.
-#1     DSCF0009.RAF
+#1     DSCF0009.RAF               rd 6240x4160 image/x-fuji-raf
 """
     assert parse_file_list(output) == [
         CameraFile(1, "DSCF0009.RAF", "/store_00010001/DCIM/100_FUJI", None)

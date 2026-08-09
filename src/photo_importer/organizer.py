@@ -5,12 +5,14 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
 from photo_importer.config import AppConfig
 from photo_importer.logger import get_logger
+from photo_importer.verifier import sha256_file
 
 log = get_logger("organizer")
 
@@ -21,6 +23,8 @@ class OrganizedFile:
     destination: Path
     capture_time: datetime | None
     sha256: str | None = None
+    # True when an identical file was already in the library, so nothing moved.
+    already_present: bool = False
 
 
 def _run_exiftool(args: list[str]) -> str:
@@ -132,6 +136,28 @@ def organize_files(
                 dest_name = f"{capture:%Y%m%d_%H%M%S}_{src.name}"
 
             dest = dest_folder / dest_name
+            digest = (hashes or {}).get(src)
+
+            existing = find_identical(dest, src, digest)
+            if existing is not None:
+                log.info(
+                    "Already in library, not copying %s (identical to %s)",
+                    src.name,
+                    existing,
+                )
+                if not config.dry_run:
+                    src.unlink(missing_ok=True)
+                organized.append(
+                    OrganizedFile(
+                        source=src,
+                        destination=existing,
+                        capture_time=capture,
+                        sha256=digest,
+                        already_present=True,
+                    )
+                )
+                continue
+
             dest = _unique_path(dest)
 
             if config.dry_run:
@@ -145,15 +171,54 @@ def organize_files(
                     source=src,
                     destination=dest,
                     capture_time=capture,
-                    sha256=(hashes or {}).get(src),
+                    sha256=digest,
                 )
             )
 
     return organized
 
 
+def _candidate_paths(dest: Path, limit: int = 50) -> Iterator[Path]:
+    """``dest`` plus any ``_1``, ``_2`` … siblings a previous run may have made."""
+    yield dest
+    for counter in range(1, limit + 1):
+        candidate = dest.parent / f"{dest.stem}_{counter}{dest.suffix}"
+        if not candidate.exists():
+            return
+        yield candidate
+
+
+def find_identical(dest: Path, src: Path, digest: str | None = None) -> Path | None:
+    """
+    Return an existing library file with the same content as ``src``, if any.
+
+    Guards against creating ``DSCF0001_1.RAF`` copies of photos the library
+    already holds — which is what happens on a name collision when the import
+    database has lost the corresponding hash.
+    """
+    try:
+        src_size = src.stat().st_size
+    except OSError:
+        return None
+
+    src_digest = digest
+    for candidate in _candidate_paths(dest):
+        if not candidate.is_file():
+            continue
+        try:
+            if candidate.stat().st_size != src_size:
+                continue
+        except OSError:
+            continue
+        if src_digest is None:
+            src_digest = sha256_file(src)
+        if sha256_file(candidate) == src_digest:
+            return candidate
+    return None
+
+
 def _unique_path(path: Path) -> Path:
-    """Avoid overwriting: DSCF0001.RAF -> DSCF0001_1.RAF, etc."""
+    """Avoid overwriting a *different* photo: DSCF0001.RAF -> DSCF0001_1.RAF."""
     if not path.exists():
         return path
     stem, suffix = path.stem, path.suffix

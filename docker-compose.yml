@@ -18,7 +18,11 @@ services:
       - ./db:/db
       - ./logs:/logs
       - ./hooks:/hooks
+      # gphotos-uploader-cli config + encrypted OAuth token (see README)
+      - ./gphotos:/gphotos
     environment:
       PHOTO_IMPORTER_CONFIG: /config/config.yaml
+      # Passphrase for SecretsBackendType: file (required for Google Photos upload)
+      # GPHOTOS_CLI_TOKENSTORE_KEY: "change-me-to-a-long-random-string"
     # Uncomment if your NAS needs the host network for USB quirks
     # network_mode: host

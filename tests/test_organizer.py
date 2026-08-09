@@ -57,3 +57,71 @@ def test_organize_keeps_pairs(tmp_path: Path, monkeypatch):
     assert all(d.parent == dest / "2026" / "07" / "31" for d in dests)
     assert (dest / "2026" / "07" / "31" / "DSCF0001.RAF").is_file()
     assert (dest / "2026" / "07" / "31" / "DSCF0001.JPG").is_file()
+
+
+def _fixed_capture(monkeypatch):
+    monkeypatch.setattr(
+        "photo_importer.organizer.get_capture_time",
+        lambda _p: datetime(2026, 7, 31, 10, 0, 0),
+    )
+
+
+def test_identical_file_already_in_library_is_not_duplicated(tmp_path: Path, monkeypatch):
+    """A lost import database must not produce DSCF0001_1.RAF copies."""
+    staging = tmp_path / "staging"
+    dest = tmp_path / "photos"
+    day = dest / "2026" / "07" / "31"
+    staging.mkdir()
+    day.mkdir(parents=True)
+    (staging / "DSCF0001.RAF").write_bytes(b"rawdata")
+    (day / "DSCF0001.RAF").write_bytes(b"rawdata")
+    _fixed_capture(monkeypatch)
+
+    cfg = AppConfig(destination=dest, staging_dir=staging, preserve_filenames=True)
+    organized = organize_files(staging, cfg, hashes={})
+
+    assert len(organized) == 1
+    assert organized[0].already_present is True
+    assert organized[0].destination == day / "DSCF0001.RAF"
+    assert not (day / "DSCF0001_1.RAF").exists()
+    assert list(day.iterdir()) == [day / "DSCF0001.RAF"]
+    assert not (staging / "DSCF0001.RAF").exists()
+
+
+def test_different_photo_with_same_name_still_gets_a_suffix(tmp_path: Path, monkeypatch):
+    staging = tmp_path / "staging"
+    dest = tmp_path / "photos"
+    day = dest / "2026" / "07" / "31"
+    staging.mkdir()
+    day.mkdir(parents=True)
+    (staging / "DSCF0001.RAF").write_bytes(b"a different photo")
+    (day / "DSCF0001.RAF").write_bytes(b"rawdata")
+    _fixed_capture(monkeypatch)
+
+    cfg = AppConfig(destination=dest, staging_dir=staging, preserve_filenames=True)
+    organized = organize_files(staging, cfg, hashes={})
+
+    assert len(organized) == 1
+    assert organized[0].already_present is False
+    assert organized[0].destination == day / "DSCF0001_1.RAF"
+    assert (day / "DSCF0001.RAF").read_bytes() == b"rawdata"
+
+
+def test_identical_match_is_found_among_existing_suffixed_copies(tmp_path: Path, monkeypatch):
+    """Cleans up after earlier runs that already made _1 copies."""
+    staging = tmp_path / "staging"
+    dest = tmp_path / "photos"
+    day = dest / "2026" / "07" / "31"
+    staging.mkdir()
+    day.mkdir(parents=True)
+    (staging / "DSCF0001.RAF").write_bytes(b"the real photo")
+    (day / "DSCF0001.RAF").write_bytes(b"something else")
+    (day / "DSCF0001_1.RAF").write_bytes(b"the real photo")
+    _fixed_capture(monkeypatch)
+
+    cfg = AppConfig(destination=dest, staging_dir=staging, preserve_filenames=True)
+    organized = organize_files(staging, cfg, hashes={})
+
+    assert organized[0].already_present is True
+    assert organized[0].destination == day / "DSCF0001_1.RAF"
+    assert not (day / "DSCF0001_2.RAF").exists()

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +60,20 @@ def run_hook(
     return True
 
 
+def _write_manifest(session_id: str, paths: Sequence[Path]) -> Path | None:
+    """Write newline-delimited absolute paths for the hook to consume."""
+    if not paths:
+        return None
+    safe_id = "".join(char for char in session_id if char.isalnum() or char in "-_")
+    manifest = Path(tempfile.gettempdir()) / f"photo-importer-{safe_id or 'session'}.manifest"
+    try:
+        manifest.write_text("".join(f"{path}\n" for path in paths), encoding="utf-8")
+    except OSError as exc:
+        log.warning("Could not write import manifest: %s", exc)
+        return None
+    return manifest
+
+
 def run_post_import(
     config: AppConfig,
     *,
@@ -66,6 +82,7 @@ def run_post_import(
     files_imported: int,
     files_skipped: int,
     camera_name: str | None,
+    imported_paths: Sequence[Path] | None = None,
 ) -> bool:
     env = {
         "IMPORT_SESSION_ID": session_id,
@@ -74,7 +91,20 @@ def run_post_import(
         "IMPORT_FILES_SKIPPED": str(files_skipped),
         "IMPORT_CAMERA_NAME": camera_name or "",
     }
-    ok = run_hook(config.hooks.post_import, env=env)
+
+    # Hand the hook the exact files from this session via a manifest file rather
+    # than argv, so a full card's worth of paths cannot overflow the arg list.
+    manifest = _write_manifest(session_id, imported_paths or [])
+    if manifest is not None:
+        env["IMPORT_MANIFEST"] = str(manifest)
+
+    try:
+        # Uploads can take a long time on a full card; do not cut them off.
+        ok = run_hook(config.hooks.post_import, env=env, timeout=6 * 60 * 60)
+    finally:
+        if manifest is not None:
+            manifest.unlink(missing_ok=True)
+
     _notify_webhook(
         config,
         {

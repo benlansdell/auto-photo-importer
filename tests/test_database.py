@@ -52,8 +52,9 @@ def _record(filename: str, digest: str, *, size: int = 100, source: str | None =
 
 
 def test_imported_index_matches_name_and_size(tmp_path: Path):
+    """Stored size is bytes; the value probed against it is the listing's KB."""
     database = Database(tmp_path / "imports.sqlite3")
-    database.record_import(_record("DSCF0001.RAF", "b" * 64, size=2048))
+    database.record_import(_record("DSCF0001.RAF", "b" * 64, size=2048 * 1024))
     index = database.imported_index()
 
     assert index.contains("DSCF0001.RAF", 2048) is True
@@ -65,7 +66,9 @@ def test_imported_index_matches_name_and_size(tmp_path: Path):
 
 def test_imported_index_uses_camera_filename_when_library_name_differs(tmp_path: Path):
     database = Database(tmp_path / "imports.sqlite3")
-    database.record_import(_record("DSCF0001-1.RAF", "c" * 64, size=512, source="DSCF0001.RAF"))
+    database.record_import(
+        _record("DSCF0001-1.RAF", "c" * 64, size=512 * 1024, source="DSCF0001.RAF")
+    )
     index = database.imported_index()
 
     assert index.contains("DSCF0001.RAF", 512) is True
@@ -79,10 +82,23 @@ def test_imported_index_falls_back_to_name_for_legacy_rows(tmp_path: Path):
     assert index.contains("DSCF0007.JPG", 1234) is True
 
 
+def test_imported_index_handles_same_name_at_two_sizes(tmp_path: Path):
+    database = Database(tmp_path / "imports.sqlite3")
+    database.record_import(_record("DSCF0001.JPG", "f" * 64, size=100 * 1024))
+    database.record_import(
+        _record("DSCF0001_1.JPG", "0" * 64, size=300 * 1024, source="DSCF0001.JPG")
+    )
+    index = database.imported_index()
+
+    assert index.contains("DSCF0001.JPG", 100) is True
+    assert index.contains("DSCF0001.JPG", 300) is True
+    assert index.contains("DSCF0001.JPG", 200) is False
+
+
 def test_gap_below_highest_sequence_is_still_downloadable(tmp_path: Path):
     """The old high-water mark hid gaps; per-file matching must not."""
     database = Database(tmp_path / "imports.sqlite3")
-    database.record_import(_record("DSCF2901.RAF", "e" * 64, size=10))
+    database.record_import(_record("DSCF2901.RAF", "e" * 64, size=10 * 1024))
     index = database.imported_index()
 
     assert index.contains("DSCF2901.RAF", 10) is True

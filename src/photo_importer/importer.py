@@ -170,9 +170,10 @@ class ImportSession:
             status_store.set_state(State.ORGANIZING, "Organizing into date folders")
             organized = organize_files(staging, self.config, hashes=remaining_hashes)
 
+            imported_paths: list[Path] = []
             for item in organized:
                 digest = item.sha256 or sha256_file(item.destination)
-                if self.config.verify_hashes:
+                if self.config.verify_hashes and not item.already_present:
                     dest_hash = sha256_file(item.destination)
                     if dest_hash != digest:
                         raise RuntimeError(f"Post-move hash mismatch for {item.destination.name}")
@@ -190,8 +191,16 @@ class ImportSession:
                     import_time=datetime.now(UTC).isoformat(),
                     source_filename=item.source.name,
                 )
-                if self.database.record_import(record):
+                if item.already_present:
+                    # Nothing was copied. Recording it teaches a rebuilt or
+                    # restored database about files the library already holds,
+                    # so the next plug skips them before downloading.
+                    if self.database.record_import(record):
+                        log.info("Indexed pre-existing library file %s", item.destination.name)
+                    skipped += 1
+                elif self.database.record_import(record):
                     imported += 1
+                    imported_paths.append(item.destination)
                 else:
                     skipped += 1
 
@@ -223,6 +232,7 @@ class ImportSession:
                 files_imported=imported,
                 files_skipped=skipped,
                 camera_name=detected.model,
+                imported_paths=imported_paths,
             )
 
             self.database.finish_session(

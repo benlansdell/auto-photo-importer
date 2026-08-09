@@ -30,8 +30,15 @@ detection and dashboard history.
 
 To avoid re-transferring the whole card on every plug, the importer first
 compares the camera's file listing against import history using
-**(filename, byte size)** taken from `gphoto2 --list-files`. Matches are skipped
+**filename + size** taken from `gphoto2 --list-files`. Matches are skipped
 without downloading; everything else is transferred and then judged by SHA-256.
+
+Note the units: `gphoto2` prints sizes in **KB** (`rd 12809 KB`) while the
+database stores **bytes**. `selection._kb_variants` compares a stored byte size
+against both floor and ceiling KB division, since gphoto2 builds differ in which
+they use. The size is only read from the field explicitly labelled `KB` —
+optional resolution (`5568x3712`) and trailing epoch columns vary by camera, and
+guessing at column position silently produced non-matching sizes.
 
 Filename and size together are cheap and per-file exact:
 
@@ -46,6 +53,38 @@ history beneath it is complete, so any gap left by an interrupted run became a
 permanent silent skip. `imports.source_filename` records the name the file had
 on the camera, so library-side renames (collision suffixes) do not cause repeat
 downloads.
+
+## Google Photos (optional)
+
+`hooks/post_import.sh` uploads **only the JPEGs from the session that just ran**
+— the library is never scanned, so nothing is backfilled.
+
+`run_post_import` writes the session's destination paths to a manifest file and
+passes it as `IMPORT_MANIFEST` (a file rather than argv, so a full card cannot
+overflow the argument list). The hook filters that list to JPEG, symlinks each
+one into `/gphotos/outbox` mirroring the `YYYY/MM/DD` layout, and runs
+`gphotos-uploader-cli --config /gphotos push` against the outbox.
+
+Symlinks are deleted only after `push` exits 0, so a failed or interrupted
+upload is retried on the next import. `DeleteAfterUpload` must stay `false` in
+`config.hjson`: the outbox entries point into the real library.
+
+Config and the encrypted OAuth token live in the host `./gphotos` bind mount
+(`SecretsBackendType: file` plus `GPHOTOS_CLI_TOKENSTORE_KEY`, since a NAS has no
+desktop keyring). See the README for Cloud Console and `auth` steps.
+
+## Name collisions
+
+When a destination name is taken, the organizer compares content before doing
+anything: if an existing file (or an existing `_1`, `_2` … sibling) has the same
+SHA-256, the staged copy is dropped and the item is marked `already_present`
+rather than becoming a `_1` duplicate. Only a genuinely different photo with the
+same name gets a suffix.
+
+`already_present` files are counted as skipped and are *also* recorded in the
+database, so a rebuilt or restored database re-learns the library it is pointed
+at instead of duplicating it. `scripts/reconcile_library.py` performs the same
+repair in bulk for damage done before this existed.
 
 The Compose bind mount `./db:/db` keeps `/db/imports.sqlite3` outside the
 container. Rebuilding or replacing the container does not remove it. Copy the

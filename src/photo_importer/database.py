@@ -225,9 +225,9 @@ class Database:
         """
         Build the pre-download match index from import history.
 
-        Matching on (filename, size) is exact per file, so an interrupted import
-        leaves no gap that would be silently skipped later — unlike a single
-        high-water sequence number, which assumes everything below it landed.
+        Matching per file (name + size) is exact, so an interrupted import leaves
+        no gap that would be silently skipped later — unlike a single high-water
+        sequence number, which assumes everything below it landed.
         """
         with self.connection() as connection:
             rows = connection.execute(
@@ -237,7 +237,7 @@ class Database:
                 """
             ).fetchall()
 
-        signatures: set[tuple[str, int]] = set()
+        byte_sizes: dict[str, set[int]] = {}
         sizeless: set[str] = set()
         for row in rows:
             filename = row["filename"]
@@ -248,9 +248,9 @@ class Database:
             if size is None:
                 sizeless.add(key)
             else:
-                signatures.add((key, int(size)))
+                byte_sizes.setdefault(key, set()).add(int(size))
 
         return ImportedIndex(
-            signatures=frozenset(signatures),
+            byte_sizes={name: frozenset(sizes) for name, sizes in byte_sizes.items()},
             sizeless_names=frozenset(sizeless),
         )
