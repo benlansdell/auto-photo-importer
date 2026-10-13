@@ -1,7 +1,11 @@
 """Pre-download file selection tests."""
 
 from photo_importer.camera import CameraFile
-from photo_importer.selection import ImportedIndex, partition_new_files
+from photo_importer.selection import (
+    ImportedIndex,
+    partition_new_files,
+    sizes_reported,
+)
 
 
 def _index(byte_sizes=None, sizeless=()):
@@ -71,6 +75,39 @@ def test_legacy_name_only_history_still_skips():
     index = _index(sizeless={"dscf0001.raf"})
 
     keep, already = partition_new_files(files, index)
+
+    assert keep == []
+    assert len(already) == 1
+
+
+def test_sizes_reported_counts_usable_sizes():
+    files = [
+        CameraFile(1, "A.JPG", "/store", size_kb=10),
+        CameraFile(2, "B.JPG", "/store", size_kb=None),
+    ]
+    assert sizes_reported(files) == 1
+    assert sizes_reported([CameraFile(1, "C.JPG", "/store", size_kb=None)]) == 0
+
+
+def test_name_only_mode_skips_known_names_without_sizes():
+    """Cameras that report no size must not re-download the whole card."""
+    files = [
+        CameraFile(1, "DSCF0001.RAF", "/store/DCIM", size_kb=None),
+        CameraFile(2, "DSCF5000.RAF", "/store/DCIM", size_kb=None),
+    ]
+    index = _index({"dscf0001.raf": {100 * 1024}})
+
+    keep, already = partition_new_files(files, index, match_names_only=True)
+
+    assert [item.name for item in keep] == ["DSCF5000.RAF"]
+    assert [item.name for item in already] == ["DSCF0001.RAF"]
+
+
+def test_name_only_mode_ignores_size_mismatch():
+    files = [CameraFile(1, "DSCF0001.RAF", "/store/DCIM", size_kb=7)]
+    index = _index({"dscf0001.raf": {100 * 1024}})
+
+    keep, already = partition_new_files(files, index, match_names_only=True)
 
     assert keep == []
     assert len(already) == 1

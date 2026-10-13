@@ -138,9 +138,9 @@ There is 1 file in folder '/store_00010001/DCIM/101_FUJI'.
 """
     files = parse_file_list(output)
     assert files == [
-        CameraFile(1, "DSCF0001.RAF", "/store_00010001/DCIM/100_FUJI", 25123),
-        CameraFile(2, "DSCF0001.JPG", "/store_00010001/DCIM/100_FUJI", 5123),
-        CameraFile(1, "DSCF0002.RAF", "/store_00010001/DCIM/101_FUJI", 25124),
+        CameraFile(1, "DSCF0001.RAF", "/store_00010001/DCIM/100_FUJI", 25123, 1),
+        CameraFile(2, "DSCF0001.JPG", "/store_00010001/DCIM/100_FUJI", 5123, 2),
+        CameraFile(1, "DSCF0002.RAF", "/store_00010001/DCIM/101_FUJI", 25124, 1),
     ]
 
 
@@ -160,8 +160,24 @@ There is 1 file in folder '/store_00010001/DCIM/100_FUJI'.
 #1     DSCF0009.RAF               rd 6240x4160 image/x-fuji-raf
 """
     assert parse_file_list(output) == [
-        CameraFile(1, "DSCF0009.RAF", "/store_00010001/DCIM/100_FUJI", None)
+        CameraFile(1, "DSCF0009.RAF", "/store_00010001/DCIM/100_FUJI", None, 1)
     ]
+
+
+def test_list_numbers_that_continue_across_slots_download_from_1():
+    """X-T3 dual-slot listings keep counting; --get-file --folder does not."""
+    output = """
+There are 2913 files in folder '/store_10000001/SLOT 1/DCIM/100_FUJI'.
+#2913   DSCF2913.RAF               rd 200 KB image/x-fuji-raf
+There are 220 files in folder '/store_10000001/SLOT 2/DCIM/101_FUJI'.
+#2914   DSCF2914.RAF               rd 200 KB image/x-fuji-raf
+#2915   DSCF2915.JPG               rd 100 KB image/jpeg
+#3133   DSCF3133.JPG               rd 100 KB image/jpeg
+"""
+    slot2 = [item for item in parse_file_list(output) if "SLOT 2" in item.folder]
+    assert [item.index for item in slot2] == [2914, 2915, 3133]
+    assert [item.download_index for item in slot2] == [1, 2, 3]
+    assert _format_index_ranges([item.download_index for item in slot2]) == "1-3"
 
 
 def test_format_index_ranges():

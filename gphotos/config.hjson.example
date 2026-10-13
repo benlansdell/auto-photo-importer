@@ -1,0 +1,38 @@
+{
+  # Create OAuth credentials (Desktop app) in Google Cloud Console, enable the
+  # Google Photos Library API, then paste ClientID / ClientSecret here.
+  # Docs: https://gphotosuploader.github.io/gphotos-uploader-cli/
+  APIAppCredentials: {
+    ClientID: YOUR_CLIENT_ID.apps.googleusercontent.com
+    ClientSecret: YOUR_CLIENT_SECRET
+  }
+
+  Account: you@gmail.com
+
+  # Required for Docker / NAS (no desktop keyring). Pair with
+  # GPHOTOS_CLI_TOKENSTORE_KEY in docker-compose.yml.
+  SecretsBackendType: file
+
+  Jobs: [
+    {
+      # NOT the photo library. post_import.sh symlinks only the JPEGs from the
+      # session that just ran into this outbox, so nothing is ever backfilled.
+      SourceFolder: /gphotos/outbox
+
+      # Optional: one album per capture date
+      # Album: "template:%_year%-%_month%-%_day%"
+
+      # Must stay false: the entries here are symlinks into /photos.
+      DeleteAfterUpload: false
+
+      # JPEG only — RAF / RAW stays on the NAS
+      IncludePatterns: [
+        "**/*.jpg"
+        "**/*.JPG"
+        "**/*.jpeg"
+        "**/*.JPEG"
+      ]
+      ExcludePatterns: []
+    }
+  ]
+}

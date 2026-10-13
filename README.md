@@ -152,6 +152,25 @@ docker compose exec importer bash -c \
    find /gphotos/outbox -type l -delete'
 ```
 
+## Why is it downloading files I already have?
+
+`scripts/explain_selection.py` answers that against the connected camera. It is
+read-only — it lists and compares, then stops:
+
+```bash
+docker compose exec importer python /app/scripts/explain_selection.py
+```
+
+It prints the raw `gphoto2 --list-files` lines, how many of them a size could be
+read from, what the database knows, and a per-file verdict such as
+`skip: filename + size match history` or
+`download: size 4123 KB does not match history [4124] KB`.
+
+If it reports that no sizes were parsed while the raw lines clearly show one, the
+size label differs from `KB` on your camera and `camera.parse_file_list` needs to
+handle that format. In the meantime the importer falls back to filename-only
+matching, which still avoids re-downloading the card.
+
 ## Recovering a library that got duplicated
 
 If the import database was lost, replaced, or out of sync, earlier runs could

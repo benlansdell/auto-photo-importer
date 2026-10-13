@@ -29,6 +29,15 @@ class CameraFile:
     folder: str
     # gphoto2 reports sizes in KB, not bytes. Kept in the unit it was printed in.
     size_kb: int | None = None
+    # 1-based position within ``folder``. ``--list-files`` numbers files across
+    # the whole camera (so slot 2 can start at #2914), but ``--get-file`` combined
+    # with ``--folder`` counts from 1 inside that folder only.
+    folder_index: int | None = None
+
+    @property
+    def download_index(self) -> int:
+        """File number ``--get-file`` expects when ``--folder`` is also set."""
+        return self.folder_index if self.folder_index is not None else self.index
 
 
 class CameraError(Exception):
@@ -220,8 +229,8 @@ def extract_serial(summary: str) -> str | None:
     return None
 
 
-def list_files(port: str | None = None) -> list[CameraFile]:
-    """Return files on the camera with folder + index for selective download."""
+def list_files_raw(port: str | None = None) -> str:
+    """Return raw ``gphoto2 --list-files`` output (column layout varies by camera)."""
     args = ["gphoto2", "--list-files"]
     if port:
         args.extend(["--port", port])
@@ -230,7 +239,12 @@ def list_files(port: str | None = None) -> list[CameraFile]:
         raise CameraError(
             clean_message(result.stderr or "") or f"--list-files exited {result.returncode}"
         )
-    return parse_file_list(result.stdout or "")
+    return result.stdout or ""
+
+
+def list_files(port: str | None = None) -> list[CameraFile]:
+    """Return files on the camera with folder + index for selective download."""
+    return parse_file_list(list_files_raw(port))
 
 
 def parse_file_list(output: str) -> list[CameraFile]:
@@ -250,6 +264,7 @@ def parse_file_list(output: str) -> list[CameraFile]:
     """
     files: list[CameraFile] = []
     folder = ""
+    seen_in_folder = 0
     folder_re = re.compile(r"files? in folder '([^']+)'", re.IGNORECASE)
     file_re = re.compile(r"#(\d+)\s+(\S+\.\w+)(?P<rest>.*)$")
     size_re = re.compile(r"(\d+)\s*KB\b", re.IGNORECASE)
@@ -257,9 +272,11 @@ def parse_file_list(output: str) -> list[CameraFile]:
         folder_match = folder_re.search(line)
         if folder_match:
             folder = folder_match.group(1)
+            seen_in_folder = 0
             continue
         file_match = file_re.search(line)
         if file_match and folder:
+            seen_in_folder += 1
             size_match = size_re.search(file_match.group("rest"))
             files.append(
                 CameraFile(
@@ -267,6 +284,7 @@ def parse_file_list(output: str) -> list[CameraFile]:
                     name=file_match.group(2),
                     folder=folder,
                     size_kb=int(size_match.group(1)) if size_match else None,
+                    folder_index=seen_in_folder,
                 )
             )
     return files
@@ -299,7 +317,9 @@ def download_files(
     """
     Download only the given camera files into dest_dir.
 
-    Files are grouped by folder because gphoto2 file indices are per-folder.
+    Files are grouped by folder. ``--get-file`` numbers are the 1-based position
+    within that folder (``folder_index``), not the ``#N`` from ``--list-files``,
+    which keeps counting across slots and DCIM folders.
     """
     if not files:
         return
@@ -313,7 +333,7 @@ def download_files(
     combined_output: list[str] = []
     failed = False
     for folder, folder_files in by_folder.items():
-        indices = _format_index_ranges([item.index for item in folder_files])
+        indices = _format_index_ranges([item.download_index for item in folder_files])
         args = [
             "gphoto2",
             "--folder",

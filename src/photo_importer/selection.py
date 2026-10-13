@@ -34,6 +34,10 @@ class ImportedIndex:
     byte_sizes: Mapping[str, frozenset[int]]
     sizeless_names: frozenset[str]
 
+    def has_name(self, name: str) -> bool:
+        key = name.casefold()
+        return key in self.sizeless_names or key in self.byte_sizes
+
     def contains(self, name: str, size_kb: int | None) -> bool:
         key = name.casefold()
         if key in self.sizeless_names:
@@ -44,20 +48,30 @@ class ImportedIndex:
         return any(size_kb in _kb_variants(size) for size in known)
 
 
-def partition_new_files(files: list, index: ImportedIndex) -> tuple[list, list]:
+def partition_new_files(
+    files: list, index: ImportedIndex, *, match_names_only: bool = False
+) -> tuple[list, list]:
     """
     Split camera files into (to_download, already_imported).
 
-    A file whose size the listing did not report is downloaded so the SHA-256
-    check can make the final call.
+    With ``match_names_only`` the size is ignored, for cameras whose listing does
+    not report one. That is weaker — a filename reused after a counter rollover
+    looks like a file already held — but downloading the entire card every time
+    is worse, and SHA-256 still decides what actually gets imported.
     """
     to_download: list = []
     already: list = []
     for item in files:
         name = getattr(item, "name", str(item))
         size_kb = getattr(item, "size_kb", None)
-        if index.contains(name, size_kb):
+        known = index.has_name(name) if match_names_only else index.contains(name, size_kb)
+        if known:
             already.append(item)
         else:
             to_download.append(item)
     return to_download, already
+
+
+def sizes_reported(files: list) -> int:
+    """How many listed files came with a size (used to pick the matching mode)."""
+    return sum(1 for item in files if getattr(item, "size_kb", None) is not None)

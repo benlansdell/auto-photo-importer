@@ -15,7 +15,7 @@ from photo_importer.database import Database, ImportRecord
 from photo_importer.hooks import run_on_error, run_post_import
 from photo_importer.logger import get_logger
 from photo_importer.organizer import organize_files
-from photo_importer.selection import partition_new_files
+from photo_importer.selection import partition_new_files, sizes_reported
 from photo_importer.state import State, status_store
 from photo_importer.verifier import hash_directory, sha256_file
 
@@ -79,13 +79,33 @@ class ImportSession:
             status_store.set_state(State.IMPORTING, "Listing camera files")
             listed = cam.list_files(self._current_port(detected))
             index = self.database.imported_index()
-            to_download, already_imported = partition_new_files(listed, index)
+
+            with_sizes = sizes_reported(listed)
+            names_only = with_sizes == 0 and bool(listed)
+            if names_only:
+                log.warning(
+                    "Camera listing reported no file sizes — matching on filename "
+                    "alone. Run scripts/explain_selection.py to see the raw listing."
+                )
+            elif with_sizes < len(listed):
+                log.info(
+                    "%d of %d listed files reported a size; the rest are downloaded "
+                    "and de-duplicated by hash",
+                    with_sizes,
+                    len(listed),
+                )
+
+            to_download, already_imported = partition_new_files(
+                listed, index, match_names_only=names_only
+            )
             skipped = len(already_imported)
             log.info(
-                "Camera has %d files → downloading %d new, skipping %d already imported",
+                "Camera has %d files → downloading %d new, skipping %d already imported "
+                "(history has %d known names)",
                 len(listed),
                 len(to_download),
                 skipped,
+                len(index.byte_sizes) + len(index.sizeless_names),
             )
 
             if not to_download:
